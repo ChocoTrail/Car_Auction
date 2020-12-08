@@ -6,6 +6,7 @@ library(tidyverse)
 library(DataExplorer) # corrrelation plot and NAs plot
 library(GGally) # ggpairs
 library(caret)
+library(tictoc)
 
 ######################
 ## Data Initialization
@@ -66,7 +67,8 @@ ggpairs(data_full) # too many columns
 ###############################
 
 selected_features <- data_full %>% 
-                     select(Auction, 
+                     select(RefId,
+                            Auction, 
                             VehYear, 
                             VehicleAge, 
                             Make, 
@@ -85,6 +87,10 @@ selected_features <- data_full %>%
                             WarrantyCost,
                             IsBadBuy)
 
+selected_features$IsBadBuy <- as.factor(selected_features$IsBadBuy)
+levels(selected_features$IsBadBuy) <- c("No", "Yes")
+levels(selected_features$IsOnlineSale) <- c("No", "Yes")
+
 ################
 ## Separate Data
 ################
@@ -94,19 +100,72 @@ selected_features_train <- selected_features %>%
                            filter(!is.na(IsBadBuy))
 
 selected_features_test <- selected_features %>% 
-                           filter(is.na(IsBadBuy))
+                          filter(is.na(IsBadBuy)) %>% 
+                          select(-IsBadBuy)
 
 indexes <- createDataPartition(selected_features_train$IsBadBuy,
                                times = 1,
                                p = .8,
                                list = FALSE)
 
-rf_train <- selected_features_train[indexes,]
-rf_test <- selected_features_train[-indexes,]
+new_train <- selected_features_train[indexes,]
+new_test <- selected_features_train[-indexes,]
 
-# start here
+rf_preprocess <- preProcess(new_train, method = "bagImpute")
+
+ready_train <- predict(rf_preprocess, new_train)
+
 rf_train_control <- trainControl(method = "repeatedcv",
                                  number = 4,
                                  repeats = 2,
                                  search = "grid",
-                                 summaryFunction = prSummary)
+                                 summaryFunction = prSummary,
+                                 classProbs = TRUE)
+
+rf_tune_grid <- expand.grid(mtry = c(4,5))
+
+# Try a 'rf' model with the metric being "AUC"
+
+tic()
+
+rf_model <- train(as.factor(IsBadBuy) ~ .,
+                  data = ready_train %>% select(-RefId),
+                  method = "rf",
+                  tuneGrid = rf_tune_grid,
+                  trControl = rf_train_control,
+                  metric = "AUC")
+
+toc()
+
+rf_preds <- predict(rf_model, new_test)
+
+# Use the model to predict Real Test Set
+
+rf_preprocess <- preProcess(selected_features_test, 
+                            method = "bagImpute")
+
+final_test <- predict(rf_preprocess, selected_features_test)
+
+test_preds <- predict(rf_model, newdata = final_test)
+
+pred_frame <- data.frame(RefId = final_test$RefId,
+                         IsBadBuy = test_preds)
+
+levels(pred_frame$IsBadBuy) <- c(0, 1)
+
+write.csv(x = pred_frame,
+          file = "./Car_Auction_Preds.csv", 
+          row.names = FALSE)
+
+# Try a 'rf' model with the metric being "F"
+
+tic()
+
+rf_model_1 <- train(as.factor(IsBadBuy) ~ .,
+                  data = ready_train %>% select(-RefId),
+                  method = "rf",
+                  tuneGrid = rf_tune_grid,
+                  trControl = rf_train_control,
+                  metric = "F")
+
+toc()
